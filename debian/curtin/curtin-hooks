@@ -311,6 +311,9 @@ def main():
     print(f"DEBUG: Hostname from config: {config.get('hostname', 'NOT SET')}")
     print(f"DEBUG: System UUID from config: {config.get('system_serial', 'NOT SET')}")
     print("-" * 80)
+    print("DEBUG: Received configuration from curtin:")
+    print(yaml.dump(config, default_flow_style=False, indent=2))
+    print("-" * 80)
 
     # Configure Proxmox network with /etc/network/interfaces
     configure_proxmox_network(config, target)

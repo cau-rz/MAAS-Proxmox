@@ -18,7 +18,6 @@
 
 import os
 import shutil
-import glob
 import yaml
 
 from curtin.commands.curthooks import builtin_curthooks
@@ -327,7 +326,6 @@ def main():
     # Skip kernel installation - Proxmox kernel is already installed in the image
     # Workaround for Debian 13: Create legacy /etc/apt/sources.list from DEB822 format
     # This prevents curtin from crashing when it tries to read sources.list
-    import subprocess
     sources_list_path = os.path.join(target, "etc/apt/sources.list")
     if not os.path.exists(sources_list_path):
         print("DEBUG: Creating /etc/apt/sources.list from DEB822 format for curtin compatibility")
@@ -339,6 +337,15 @@ def main():
             f.write("deb http://security.debian.org/debian-security trixie-security main contrib non-free non-free-firmware\n")
             f.write("deb http://download.proxmox.com/debian/pve trixie pve-no-subscription\n")
 
+    # FIX issue #9: Prevent builtin_curthooks from overwriting sources.list
+    # with Ubuntu repos (caused by Ubuntu cloud-init package detection)
+    if 'apt' not in config_without_network:
+        config_without_network['apt'] = {}
+    config_without_network['apt']['preserve_sources_list'] = True
+    config_without_network['apt']['sources'] = {}
+    config_without_network['apt']['sources_list'] = {}
+    print("DEBUG: Set preserve_sources_list=True to prevent Ubuntu repo injection")
+
     # CRITICAL FIX: Use {'install': False} to disable kernel installation
     # Setting kernel=None causes AttributeError in curtin's install_kernel() at line 377
     # According to curtin source, install_kernel() checks for kernel: {install: false}
@@ -347,6 +354,41 @@ def main():
     print("DEBUG: Disabled kernel installation by setting kernel={'install': False}")
     print("DEBUG: Proxmox kernel 6.17.4-2-pve is already installed in the image")
     print("=" * 80)
+
+    # FIX: Prevent grub-install from failing on RAID (EFI on md device)
+    # grub-install cannot register EFI boot entries when the ESP is on an md device
+    # because EFI firmware doesn't understand md device paths. Setting update_nvram=False
+    # adds --no-nvram to grub-install, skipping NVRAM registration.
+    # Only disable NVRAM on RAID — on single disk, let grub create proper boot entries.
+    if 'grub' not in config_without_network:
+        config_without_network['grub'] = {}
+
+    # Detect if ESP is on a RAID device
+    esp_on_raid = False
+    efi_mount = os.path.join(target, "boot/efi")
+    if os.path.ismount(efi_mount):
+        try:
+            import subprocess
+            result = subprocess.run(
+                ['findmnt', '-n', '-o', 'SOURCE', efi_mount],
+                capture_output=True, text=True
+            )
+            esp_device = result.stdout.strip()
+            if '/md' in esp_device:
+                esp_on_raid = True
+                print(f"DEBUG: ESP is on RAID device {esp_device}, disabling NVRAM update")
+            else:
+                print(f"DEBUG: ESP is on physical device {esp_device}, allowing NVRAM update")
+        except Exception as e:
+            print(f"DEBUG: Could not detect ESP device ({e}), allowing NVRAM update")
+    else:
+        print(f"DEBUG: {efi_mount} is not mounted yet, allowing NVRAM update")
+
+    if esp_on_raid:
+        config_without_network['grub']['update_nvram'] = False
+        print("DEBUG: Set grub update_nvram=False (ESP on RAID, MAAS handles boot order via BMC)")
+    else:
+        print("DEBUG: Allowing grub to update NVRAM (ESP on physical device)")
 
     print("DEBUG: Config being passed to builtin_curthooks:")
     print(f"  - hostname: {config_without_network.get('hostname', 'NOT SET')}")
@@ -358,6 +400,27 @@ def main():
     print("DEBUG: Calling builtin_curthooks()...")
     builtin_curthooks(config_without_network, target, state)
     print("DEBUG: builtin_curthooks() completed successfully")
+
+    # Ensure fallback EFI boot path exists
+    # grub-install puts files in EFI/debian/ but some firmware (especially on RAID)
+    # only checks the fallback path EFI/BOOT/BOOTX64.EFI
+    efi_debian_dir = os.path.join(target, "boot/efi/EFI/debian")
+    efi_boot_dir = os.path.join(target, "boot/efi/EFI/BOOT")
+    if os.path.isdir(efi_debian_dir):
+        os.makedirs(efi_boot_dir, exist_ok=True)
+        # Prefer shimx64.efi for secure boot, fall back to grubx64.efi
+        shim_src = os.path.join(efi_debian_dir, "shimx64.efi")
+        grub_src = os.path.join(efi_debian_dir, "grubx64.efi")
+        boot_src = shim_src if os.path.exists(shim_src) else grub_src
+        if os.path.exists(boot_src):
+            grub_dst = os.path.join(efi_boot_dir, "BOOTX64.EFI")
+            shutil.copy2(boot_src, grub_dst)
+            print(f"DEBUG: Copied {os.path.basename(boot_src)} to fallback EFI path: {grub_dst}")
+        # Also copy grubx64.efi to BOOT dir (shim needs it alongside)
+        if os.path.exists(shim_src) and os.path.exists(grub_src):
+            grub_boot_dst = os.path.join(efi_boot_dir, "grubx64.efi")
+            shutil.copy2(grub_src, grub_boot_dst)
+            print(f"DEBUG: Copied grubx64.efi to fallback EFI dir: {grub_boot_dst}")
 
     # Verify what was actually written
     hostname_path = os.path.join(target, "etc/hostname")

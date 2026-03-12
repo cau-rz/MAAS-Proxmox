@@ -75,6 +75,7 @@
       apt:
         name:
           - proxmox-ve
+          - proxmox-secure-boot-support
           - postfix
           - open-iscsi
           - chrony
@@ -90,6 +91,16 @@
     - name: Remove os-prober
       apt:
         name: os-prober
+        state: absent
+
+    # Fix RAID boot support (issue #10)
+    # grub-cloud-amd64 installs 10_cloud.cfg which sets GRUB_DISABLE_LINUX_UUID=true
+    # This forces GRUB to use PARTUUID for root device, which doesn't work on RAID
+    # arrays (md devices). Removing this file lets GRUB use UUID which works for
+    # both RAID and non-RAID setups.
+    - name: Remove grub 10_cloud.cfg to fix RAID boot
+      file:
+        path: /etc/default/grub.d/10_cloud.cfg
         state: absent
 
     # Remove standard Debian kernel (keep only Proxmox kernel)
@@ -208,6 +219,17 @@
       lineinfile:
         path: /etc/cloud/cloud.cfg
         regexp: '^\s*-\s*network\s*$'
+        state: absent
+
+    # Disable snap cloud-init module (fixes issue #12)
+    # MAAS sends snap: directives in vendor-data (e.g. proxy config) but
+    # Proxmox is Debian-based and doesn't use snapd. Without this, cloud-init
+    # logs errors and reports degraded status. This does not affect hardware
+    # sync which uses a separate systemd service.
+    - name: Remove snap from cloud_init_modules list
+      lineinfile:
+        path: /etc/cloud/cloud.cfg
+        regexp: '^\s*-\s*snap\s*$'
         state: absent
 
     - name: Modify cloud-init hosts template to remove 127.0.1.1 line

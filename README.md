@@ -92,9 +92,12 @@ sg kvm -c "make proxmox"
 **What's included**:
 - Proxmox VE 9.1 (pve-no-subscription)
 - Proxmox kernel 6.17.x
+- Secure Boot support (proxmox-secure-boot-support + shim)
 - Cloud-init configured for Proxmox compatibility
 - ifupdown2 network management with vmbr0 bridge
 - Comprehensive network support: bonds, VLANs, static routes, bridges
+- EFI fallback boot path for broad firmware compatibility
+- Proxmox apt repositories preserved during deployment
 - All Proxmox services start automatically
 
 ### 3. Upload to MAAS
@@ -125,7 +128,7 @@ Replace `admin` with your MAAS profile name.
 - ✅ **Network IP Mode**: Use "Auto assign" or "Static assign" - **NEVER "DHCP"** (curtin-hooks requires static IPs)
 - ✅ **Bond Link Monitoring**: If using bonds, set `mii-monitor-interval` to `100` (not `0`)
 - ✅ **No Bridges**: Do NOT create bridges in MAAS (vmbr0 is created automatically)
-- ✅ **BIOS Settings**: UEFI enabled, Secure Boot disabled
+- ✅ **BIOS Settings**: UEFI enabled, Secure Boot supported
 - ✅ **MAAS Settings**: SSH key configured in MAAS
 
 <details>
@@ -326,7 +329,11 @@ FUSE errors: `sudo modprobe fuse`
 
 **Boots to EFI shell**
 
-Enable UEFI boot and disable Secure Boot in BIOS/IPMI.
+Ensure UEFI boot is enabled in BIOS/IPMI. Secure Boot is supported but may need to be disabled on some firmware that doesn't trust the Debian shim.
+
+**RAID boot not working**
+
+MAAS places the EFI System Partition on the md array (e.g., `md0p1`). UEFI firmware cannot read md devices, so the bootloader is never found. This is a MAAS storage layout limitation. Workaround: use a single-disk layout for the boot disk, or use a separate physical disk for the EFI partition.
 
 </details>
 
